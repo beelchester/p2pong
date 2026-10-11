@@ -1,10 +1,15 @@
+mod game;
+
+use game::Game;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
+use web_time::Instant;
 use wgpu::web_sys;
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
+    event::{ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
+    keyboard::PhysicalKey,
     platform::web::{EventLoopExtWebSys, WindowAttributesExtWebSys},
     window::{Window, WindowId},
 };
@@ -92,6 +97,8 @@ impl Renderer {
 struct App {
     proxy: EventLoopProxy<Renderer>,
     renderer: Option<Renderer>,
+    game: Game,
+    last_frame: Instant,
 }
 
 impl ApplicationHandler<Renderer> for App {
@@ -119,8 +126,17 @@ impl ApplicationHandler<Renderer> for App {
         match event {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::Resized(s) => renderer.resize(s.width, s.height),
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let PhysicalKey::Code(code) = event.physical_key {
+                    self.game
+                        .set_key(code, event.state == ElementState::Pressed);
+                }
+            }
             WindowEvent::RedrawRequested => {
-                renderer.render();
+                let now = Instant::now();
+                let dt = (now - self.last_frame).as_secs_f32().min(0.05);
+                self.last_frame = now;
+                self.game.update(dt);
                 renderer.window.request_redraw();
             }
             _ => {}
@@ -135,6 +151,8 @@ pub fn run() {
     let app = App {
         proxy: el.create_proxy(),
         renderer: None,
+        game: Game::default(),
+        last_frame: Instant::now(),
     };
     el.spawn_app(app);
 }
