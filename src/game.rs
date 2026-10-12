@@ -51,8 +51,8 @@ impl Game {
 
     pub fn set_key(&mut self, code: KeyCode, pressed: bool) {
         match code {
-            KeyCode::KeyK => self.left_up = pressed,
-            KeyCode::KeyJ => self.left_down = pressed,
+            KeyCode::KeyW => self.left_up = pressed,
+            KeyCode::KeyS => self.left_down = pressed,
             KeyCode::ArrowUp => self.right_up = pressed,
             KeyCode::ArrowDown => self.right_down = pressed,
             _ => {}
