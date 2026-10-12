@@ -14,12 +14,25 @@ use winit::{
     window::{Window, WindowId},
 };
 
+const SHADER: &str = r#"
+@vertex
+fn vs_main(@location(0) pos: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(pos, 0.0, 1.0);
+}
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 1.0, 1.0, 1.0);
+}
+"#;
+
 struct Renderer {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
 }
 
 impl Renderer {
@@ -47,12 +60,53 @@ impl Renderer {
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
             .unwrap();
         surface.configure(&device, &config);
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("paddle shader"),
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("paddle pipeline"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: 8,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x2,
+                        offset: 0,
+                        shader_location: 0,
+                    }],
+                })],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(config.format.into())],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("paddle vertices"),
+            size: 24 * 4,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         Self {
             window,
             surface,
             device,
             queue,
             config,
+            pipeline,
+            vertex_buffer,
         }
     }
 
@@ -62,7 +116,7 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
-    fn render(&self) {
+    fn render(&self, game: &Game) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -74,8 +128,15 @@ impl Renderer {
         };
         let view = frame.texture.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
+
+        let bytes: Vec<u8> = game
+            .vertices()
+            .iter()
+            .flat_map(|f| f.to_ne_bytes())
+            .collect();
+        self.queue.write_buffer(&self.vertex_buffer, 0, &bytes);
         {
-            let _pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
@@ -87,6 +148,9 @@ impl Renderer {
                 })],
                 ..Default::default()
             });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            pass.draw(0..12, 0..1);
         }
         self.queue.submit([enc.finish()]);
         self.window.pre_present_notify();
@@ -137,6 +201,7 @@ impl ApplicationHandler<Renderer> for App {
                 let dt = (now - self.last_frame).as_secs_f32().min(0.05);
                 self.last_frame = now;
                 self.game.update(dt);
+                renderer.render(&self.game);
                 renderer.window.request_redraw();
             }
             _ => {}

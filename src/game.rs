@@ -11,7 +11,9 @@ pub struct Game {
     right_down: bool,
 }
 
+const PADDLE_HALF_W: f32 = 0.015;
 const PADDLE_HALF_H: f32 = 0.15;
+const PADDLE_MARGIN: f32 = 0.05;
 const PADDLE_SPEED: f32 = 1.5;
 
 impl Game {
@@ -34,4 +36,18 @@ impl Game {
         self.right_y = (self.right_y + r as f32 * PADDLE_SPEED * dt).clamp(-limit, limit);
         web_sys::console::log_1(&format!("({}, {})", self.left_y, self.right_y).into());
     }
+    pub fn vertices(&self) -> [f32; 24] {
+        let lx = -1.0 + PADDLE_MARGIN + PADDLE_HALF_W;
+        let rx = 1.0 - PADDLE_MARGIN - PADDLE_HALF_W;
+        let mut v = [0.0; 24];
+        v[..12].copy_from_slice(&quad(lx, self.left_y));
+        v[12..].copy_from_slice(&quad(rx, self.right_y));
+        v
+    }
+}
+
+fn quad(cx: f32, cy: f32) -> [f32; 12] {
+    let (l, r) = (cx - PADDLE_HALF_W, cx + PADDLE_HALF_W);
+    let (b, t) = (cy - PADDLE_HALF_H, cy + PADDLE_HALF_H);
+    [l, b, r, b, r, t, l, b, r, t, l, t]
 }
