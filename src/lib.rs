@@ -4,7 +4,6 @@ use game::Game;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 use web_time::Instant;
-use wgpu::web_sys;
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, WindowEvent},
@@ -135,7 +134,7 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
-    fn render(&self, game: &Game) {
+    fn render(&self, game: Option<&Game>) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -148,12 +147,14 @@ impl Renderer {
         let view = frame.texture.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
 
-        let bytes: Vec<u8> = game
-            .vertices()
-            .iter()
-            .flat_map(|f| f.to_ne_bytes())
-            .collect();
-        self.queue.write_buffer(&self.vertex_buffer, 0, &bytes);
+        if let Some(game) = game {
+            let bytes: Vec<u8> = game
+                .vertices()
+                .iter()
+                .flat_map(|f| f.to_ne_bytes())
+                .collect();
+            self.queue.write_buffer(&self.vertex_buffer, 0, &bytes);
+        }
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -167,9 +168,11 @@ impl Renderer {
                 })],
                 ..Default::default()
             });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.draw(0..18, 0..1);
+            if game.is_some() {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                pass.draw(0..18, 0..1);
+            }
         }
         self.queue.submit([enc.finish()]);
         self.window.pre_present_notify();
@@ -177,30 +180,93 @@ impl Renderer {
     }
 }
 
+pub enum AppEvent {
+    RendererReady(Renderer),
+    StartLocal,
+}
+
+fn dom() -> web_sys::Document {
+    web_sys::window().unwrap().document().unwrap()
+}
+
+fn set_hidden(id: &str, hidden: bool) {
+    let el = dom().get_element_by_id(id).unwrap();
+    if hidden {
+        el.set_attribute("hidden", "").unwrap();
+    } else {
+        el.remove_attribute("hidden").unwrap();
+    }
+}
+
+fn update_wins_hud(wins: [u32; 2]) {
+    let show = wins[0] + wins[1] > 0;
+    for (i, w) in wins.iter().enumerate() {
+        let text = if show {
+            format!("Wins: {w}")
+        } else {
+            String::new()
+        };
+        dom()
+            .get_element_by_id(&format!("wins{}", i + 1))
+            .unwrap()
+            .set_text_content(Some(&text));
+    }
+}
+
+fn focus_canvas() {
+    if let Some(el) = dom().query_selector("canvas").unwrap() {
+        if let Ok(el) = el.dyn_into::<web_sys::HtmlElement>() {
+            let _ = el.focus();
+        }
+    }
+}
+
+fn on_click(id: &str, f: impl FnMut() + 'static) {
+    let cb = Closure::<dyn FnMut()>::new(f);
+    dom()
+        .get_element_by_id(id)
+        .unwrap()
+        .add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())
+        .unwrap();
+    cb.forget();
+}
+
 struct App {
-    proxy: EventLoopProxy<Renderer>,
+    proxy: EventLoopProxy<AppEvent>,
     renderer: Option<Renderer>,
     game: Game,
     last_frame: Instant,
+    playing: bool,
 }
 
-impl ApplicationHandler<Renderer> for App {
+impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         let attrs = Window::default_attributes().with_append(true);
         let window = Arc::new(el.create_window(attrs).unwrap());
         let proxy = self.proxy.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let renderer = Renderer::new(window).await;
-            let _ = proxy.send_event(renderer); // sends to user_event when finished in bg
+            let _ = proxy.send_event(AppEvent::RendererReady(renderer)); // sends to user_event when finished in bg
         });
     }
 
-    fn user_event(&mut self, _el: &ActiveEventLoop, mut renderer: Renderer) {
-        let size = renderer.window.inner_size();
-        renderer.resize(size.width, size.height);
-        self.game.aspect = size.width as f32 / size.height.max(1) as f32;
-        renderer.window.request_redraw();
-        self.renderer = Some(renderer);
+    fn user_event(&mut self, _el: &ActiveEventLoop, event: AppEvent) {
+        match event {
+            AppEvent::RendererReady(mut renderer) => {
+                let size = renderer.window.inner_size();
+                renderer.resize(size.width, size.height);
+                self.game.aspect = size.width as f32 / size.height.max(1) as f32;
+                renderer.window.request_redraw();
+                self.renderer = Some(renderer);
+            }
+            AppEvent::StartLocal => {
+                self.playing = true;
+                self.last_frame = Instant::now();
+                set_hidden("menu", true);
+                set_hidden("hud", false);
+                focus_canvas();
+            }
+        }
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -214,17 +280,21 @@ impl ApplicationHandler<Renderer> for App {
                 self.game.aspect = s.width as f32 / s.height.max(1) as f32;
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if let PhysicalKey::Code(code) = event.physical_key {
-                    self.game
-                        .set_key(code, event.state == ElementState::Pressed);
+                if !event.repeat {
+                    if let PhysicalKey::Code(code) = event.physical_key {
+                        self.game
+                            .set_key(code, event.state == ElementState::Pressed);
+                    }
                 }
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
                 let dt = (now - self.last_frame).as_secs_f32().min(0.05);
                 self.last_frame = now;
-                self.game.update(dt);
-                renderer.render(&self.game);
+                if self.playing && self.game.update(dt).is_some() {
+                    update_wins_hud(self.game.wins);
+                }
+                renderer.render(self.playing.then_some(&self.game));
                 renderer.window.request_redraw();
             }
             _ => {}
@@ -235,12 +305,20 @@ impl ApplicationHandler<Renderer> for App {
 #[wasm_bindgen(start)]
 pub fn run() {
     console_error_panic_hook::set_once();
-    let el = EventLoop::<Renderer>::with_user_event().build().unwrap();
+    let el = EventLoop::<AppEvent>::with_user_event().build().unwrap();
+    let proxy = el.create_proxy();
+
+    let p = proxy.clone();
+    on_click("btn-local", move || {
+        let _ = p.send_event(AppEvent::StartLocal);
+    });
+
     let app = App {
-        proxy: el.create_proxy(),
+        proxy,
         renderer: None,
         game: Game::new(),
         last_frame: Instant::now(),
+        playing: false,
     };
     el.spawn_app(app);
 }

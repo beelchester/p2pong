@@ -13,3 +13,4 @@ wasm-bindgen-futures = "0.4.79"
 web-time = "1.1.0"
 wgpu = { version = "30.0.1", features = ["webgl"] }
 winit = "0.30.13"
+web-sys = { version = "0.3", features = ["console", "Window", "Document", "Element", "HtmlElement", "EventTarget"] }
