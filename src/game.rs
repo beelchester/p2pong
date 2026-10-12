@@ -1,24 +1,55 @@
-use wgpu::web_sys;
 use winit::keyboard::KeyCode;
-
-#[derive(Default)]
-pub struct Game {
-    left_y: f32,
-    right_y: f32,
-    left_up: bool,
-    left_down: bool,
-    right_up: bool,
-    right_down: bool,
-}
 
 const PADDLE_HALF_W: f32 = 0.015;
 const PADDLE_HALF_H: f32 = 0.15;
 const PADDLE_MARGIN: f32 = 0.05;
 const PADDLE_SPEED: f32 = 1.5;
 
+const BALL_HALF: f32 = 0.02;
+const BALL_SPEEDUP: f32 = 1.05;
+const BALL_MAX_SPEED: f32 = 2.5;
+const MAX_BOUNCE_ANGLE: f32 = 1.05;
+
+pub struct Game {
+    pub aspect: f32,
+    left_y: f32,
+    right_y: f32,
+    left_up: bool,
+    left_down: bool,
+    right_up: bool,
+    right_down: bool,
+    ball_x: f32,
+    ball_y: f32,
+    ball_vx: f32,
+    ball_vy: f32,
+}
+
 impl Game {
+    pub fn new() -> Self {
+        Self {
+            aspect: 4.0 / 3.0,
+            left_y: 0.0,
+            right_y: 0.0,
+            left_up: false,
+            left_down: false,
+            right_up: false,
+            right_down: false,
+            ball_x: 0.0,
+            ball_y: 0.0,
+            ball_vx: 1.0,
+            ball_vy: 0.5,
+        }
+    }
+
+    fn left_x(&self) -> f32 {
+        -self.aspect + PADDLE_MARGIN + PADDLE_HALF_W
+    }
+
+    fn right_x(&self) -> f32 {
+        self.aspect - PADDLE_MARGIN - PADDLE_HALF_W
+    }
+
     pub fn set_key(&mut self, code: KeyCode, pressed: bool) {
-        web_sys::console::log_1(&format!("{:?}", &code).into());
         match code {
             KeyCode::KeyK => self.left_up = pressed,
             KeyCode::KeyJ => self.left_down = pressed,
@@ -34,20 +65,78 @@ impl Game {
         let r = self.right_up as i32 - self.right_down as i32;
         self.left_y = (self.left_y + l as f32 * PADDLE_SPEED * dt).clamp(-limit, limit);
         self.right_y = (self.right_y + r as f32 * PADDLE_SPEED * dt).clamp(-limit, limit);
-        web_sys::console::log_1(&format!("({}, {})", self.left_y, self.right_y).into());
+
+        self.ball_x += self.ball_vx * dt;
+        self.ball_y += self.ball_vy * dt;
+
+        let wall = 1.0 - BALL_HALF;
+        if self.ball_y > wall {
+            self.ball_y = wall;
+            self.ball_vy = -self.ball_vy.abs();
+        } else if self.ball_y < -wall {
+            self.ball_y = -wall;
+            self.ball_vy = self.ball_vy.abs();
+        }
+
+        let (lx, rx) = (self.left_x(), self.right_x());
+        if self.ball_vx < 0.0 && self.hits(lx, self.left_y) {
+            self.bounce(lx + PADDLE_HALF_W + BALL_HALF, self.left_y, 1.0);
+        } else if self.ball_vx > 0.0 && self.hits(rx, self.right_y) {
+            self.bounce(rx - PADDLE_HALF_W - BALL_HALF, self.right_y, -1.0);
+        }
     }
-    pub fn vertices(&self) -> [f32; 24] {
-        let lx = -1.0 + PADDLE_MARGIN + PADDLE_HALF_W;
-        let rx = 1.0 - PADDLE_MARGIN - PADDLE_HALF_W;
-        let mut v = [0.0; 24];
-        v[..12].copy_from_slice(&quad(lx, self.left_y));
-        v[12..].copy_from_slice(&quad(rx, self.right_y));
+
+    fn hits(&self, paddle_x: f32, paddle_y: f32) -> bool {
+        (self.ball_x - paddle_x).abs() < PADDLE_HALF_W + BALL_HALF
+            && (self.ball_y - paddle_y).abs() < PADDLE_HALF_H + BALL_HALF
+    }
+
+    fn bounce(&mut self, new_x: f32, paddle_y: f32, dir: f32) {
+        let offset = ((self.ball_y - paddle_y) / (PADDLE_HALF_H + BALL_HALF)).clamp(-1.0, 1.0);
+        let angle = offset * MAX_BOUNCE_ANGLE;
+        let speed = (self.ball_vx.hypot(self.ball_vy) * BALL_SPEEDUP).min(BALL_MAX_SPEED);
+
+        self.ball_x = new_x;
+        self.ball_vx = dir * speed * angle.cos();
+        self.ball_vy = speed * angle.sin();
+    }
+
+    pub fn vertices(&self) -> [f32; 72] {
+        let a = self.aspect;
+        let mut v = [0.0; 72];
+        v[..24].copy_from_slice(&quad(
+            self.left_x(),
+            self.left_y,
+            PADDLE_HALF_W,
+            PADDLE_HALF_H,
+            a,
+            false,
+        ));
+        v[24..48].copy_from_slice(&quad(
+            self.right_x(),
+            self.right_y,
+            PADDLE_HALF_W,
+            PADDLE_HALF_H,
+            a,
+            false,
+        ));
+        v[48..].copy_from_slice(&quad(
+            self.ball_x,
+            self.ball_y,
+            BALL_HALF,
+            BALL_HALF,
+            a,
+            true,
+        ));
         v
     }
 }
 
-fn quad(cx: f32, cy: f32) -> [f32; 12] {
-    let (l, r) = (cx - PADDLE_HALF_W, cx + PADDLE_HALF_W);
-    let (b, t) = (cy - PADDLE_HALF_H, cy + PADDLE_HALF_H);
-    [l, b, r, b, r, t, l, b, r, t, l, t]
+fn quad(cx: f32, cy: f32, hw: f32, hh: f32, aspect: f32, round: bool) -> [f32; 24] {
+    let (l, r) = ((cx - hw) / aspect, (cx + hw) / aspect);
+    let (b, t) = (cy - hh, cy + hh);
+    let u = if round { 1.0 } else { 0.0 };
+    [
+        l, b, -u, -u, r, b, u, -u, r, t, u, u, l, b, -u, -u, r, t, u, u, l, t, -u, u,
+    ]
 }

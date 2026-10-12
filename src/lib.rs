@@ -15,12 +15,24 @@ use winit::{
 };
 
 const SHADER: &str = r#"
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
 @vertex
-fn vs_main(@location(0) pos: vec2<f32>) -> @builtin(position) vec4<f32> {
-    return vec4<f32>(pos, 0.0, 1.0);
+fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>) -> VsOut {
+    var out: VsOut;
+    out.pos = vec4<f32>(pos, 0.0, 1.0);
+    out.uv = uv;
+    return out;
 }
+
 @fragment
-fn fs_main() -> @location(0) vec4<f32> {
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    if (length(in.uv) > 1.0) {
+        discard;
+    }
     return vec4<f32>(1.0, 1.0, 1.0, 1.0);
 }
 "#;
@@ -72,13 +84,20 @@ impl Renderer {
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 8,
+                    array_stride: 16,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x2,
-                        offset: 0,
-                        shader_location: 0,
-                    }],
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 8,
+                            shader_location: 1,
+                        },
+                    ],
                 })],
             },
             fragment: Some(wgpu::FragmentState {
@@ -95,7 +114,7 @@ impl Renderer {
         });
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("paddle vertices"),
-            size: 24 * 4,
+            size: 72 * 4,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -150,7 +169,7 @@ impl Renderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.draw(0..12, 0..1);
+            pass.draw(0..18, 0..1);
         }
         self.queue.submit([enc.finish()]);
         self.window.pre_present_notify();
@@ -179,6 +198,7 @@ impl ApplicationHandler<Renderer> for App {
     fn user_event(&mut self, _el: &ActiveEventLoop, mut renderer: Renderer) {
         let size = renderer.window.inner_size();
         renderer.resize(size.width, size.height);
+        self.game.aspect = size.width as f32 / size.height.max(1) as f32;
         renderer.window.request_redraw();
         self.renderer = Some(renderer);
     }
@@ -189,7 +209,10 @@ impl ApplicationHandler<Renderer> for App {
         };
         match event {
             WindowEvent::CloseRequested => el.exit(),
-            WindowEvent::Resized(s) => renderer.resize(s.width, s.height),
+            WindowEvent::Resized(s) => {
+                renderer.resize(s.width, s.height);
+                self.game.aspect = s.width as f32 / s.height.max(1) as f32;
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     self.game
@@ -216,7 +239,7 @@ pub fn run() {
     let app = App {
         proxy: el.create_proxy(),
         renderer: None,
-        game: Game::default(),
+        game: Game::new(),
         last_frame: Instant::now(),
     };
     el.spawn_app(app);
